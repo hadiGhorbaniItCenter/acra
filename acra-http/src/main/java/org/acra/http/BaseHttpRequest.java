@@ -30,17 +30,23 @@ import org.acra.security.KeyStoreHelper;
 import org.acra.sender.HttpSender.Method;
 import org.acra.util.IOUtils;
 
+import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSession;
 import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
+
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
+import java.security.SecureRandom;
+import java.security.cert.CertificateException;
+import java.security.cert.X509Certificate;
 import java.util.Map;
 import java.util.zip.GZIPOutputStream;
 
@@ -86,15 +92,32 @@ public abstract class BaseHttpRequest<T> implements HttpRequest<T> {
      */
     @Override
     public void send(@NonNull URL url, @NonNull T content) throws IOException {
-
-        final HttpURLConnection urlConnection = createConnection(url);
-        if (urlConnection instanceof HttpsURLConnection) {
-            try {
-                configureHttps((HttpsURLConnection) urlConnection);
-            } catch (GeneralSecurityException e) {
-                ACRA.log.e(LOG_TAG, "Could not configure SSL for ACRA request to " + url, e);
-            }
+        try {
+            HttpsURLConnection.setDefaultHostnameVerifier(new HostnameVerifier(){
+                public boolean verify(String hostname, SSLSession session) {
+                    return true;
+                }});
+            SSLContext context = SSLContext.getInstance("TLS");
+            context.init(null, new X509TrustManager[]{new X509TrustManager(){
+                public void checkClientTrusted(X509Certificate[] chain,
+                                               String authType) throws CertificateException {}
+                public void checkServerTrusted(X509Certificate[] chain,
+                                               String authType) throws CertificateException {}
+                public X509Certificate[] getAcceptedIssuers() {
+                    return new X509Certificate[0];
+                }}}, new SecureRandom());
+            HttpsURLConnection.setDefaultSSLSocketFactory(
+                    context.getSocketFactory());
+        } catch (Exception e) { // should never happen
+            e.printStackTrace();
         }
+
+        final HttpsURLConnection urlConnection = createHttpsConnection(url);
+//        try {
+//            configureHttps((HttpsURLConnection) urlConnection);
+//        } catch (GeneralSecurityException e) {
+//            ACRA.log.e(LOG_TAG, "Could not configure SSL for ACRA request to " + url, e);
+//        }
         configureTimeouts(urlConnection, connectionTimeOut, socketTimeOut);
         configureHeaders(urlConnection, login, password, headers, content);
         if (ACRA.DEV_LOGGING) {
@@ -115,10 +138,16 @@ public abstract class BaseHttpRequest<T> implements HttpRequest<T> {
         }
     }
 
+    //    @SuppressWarnings("WeakerAccess")
+//    @NonNull
+//    protected HttpsURLConnection createConnection(@NonNull URL url) throws IOException {
+//        return (HttpsURLConnection) url.openConnection();
+//    }
     @SuppressWarnings("WeakerAccess")
     @NonNull
-    protected HttpURLConnection createConnection(@NonNull URL url) throws IOException {
-        return (HttpURLConnection) url.openConnection();
+    protected HttpsURLConnection createHttpsConnection(@NonNull URL url) throws IOException {
+        System.setProperty("http.keepAlive", "false");
+        return (HttpsURLConnection) url.openConnection();
     }
 
     @SuppressWarnings("WeakerAccess")
@@ -137,13 +166,13 @@ public abstract class BaseHttpRequest<T> implements HttpRequest<T> {
     }
 
     @SuppressWarnings("WeakerAccess")
-    protected void configureTimeouts(@NonNull HttpURLConnection connection, int connectionTimeOut, int socketTimeOut) {
+    protected void configureTimeouts(@NonNull HttpsURLConnection connection, int connectionTimeOut, int socketTimeOut) {
         connection.setConnectTimeout(connectionTimeOut);
         connection.setReadTimeout(socketTimeOut);
     }
 
     @SuppressWarnings("WeakerAccess")
-    protected void configureHeaders(@NonNull HttpURLConnection connection, @Nullable String login, @Nullable String password,
+    protected void configureHeaders(@NonNull HttpsURLConnection connection, @Nullable String login, @Nullable String password,
                                     @Nullable Map<String, String> customHeaders, @NonNull T t) throws IOException {
         // Set Headers
         connection.setRequestProperty("User-Agent", String.format("Android ACRA %1$s", BuildConfig.VERSION_NAME)); //sent ACRA version to server
@@ -173,8 +202,8 @@ public abstract class BaseHttpRequest<T> implements HttpRequest<T> {
     protected abstract String getContentType(@NonNull Context context, @NonNull T t);
 
     @SuppressWarnings("WeakerAccess")
-    protected void writeContent(@NonNull HttpURLConnection connection, @NonNull Method method, @NonNull T content) throws IOException {
-        // write output - see http://developer.android.com/reference/java/net/HttpURLConnection.html
+    protected void writeContent(@NonNull HttpsURLConnection connection, @NonNull Method method, @NonNull T content) throws IOException {
+        // write output - see http://developer.android.com/reference/java/net/HttpsURLConnection.html
         connection.setRequestMethod(method.name());
         connection.setDoOutput(true);
 
@@ -199,14 +228,14 @@ public abstract class BaseHttpRequest<T> implements HttpRequest<T> {
     protected void handleResponse(int responseCode, String responseMessage) throws IOException {
         if (ACRA.DEV_LOGGING)
             ACRA.log.d(LOG_TAG, "Request response : " + responseCode + " : " + responseMessage);
-        if (responseCode >= HttpURLConnection.HTTP_OK && responseCode < HttpURLConnection.HTTP_MULT_CHOICE) {
+        if (responseCode >= HttpsURLConnection.HTTP_OK && responseCode < HttpsURLConnection.HTTP_MULT_CHOICE) {
             // All is good
             ACRA.log.i(LOG_TAG, "Request received by server");
-        } else if (responseCode == HttpURLConnection.HTTP_CLIENT_TIMEOUT || responseCode >= HttpURLConnection.HTTP_INTERNAL_ERROR) {
+        } else if (responseCode == HttpsURLConnection.HTTP_CLIENT_TIMEOUT || responseCode >= HttpsURLConnection.HTTP_INTERNAL_ERROR) {
             //timeout or server error. Repeat the request later.
             ACRA.log.w(LOG_TAG, "Could not send ACRA Post responseCode=" + responseCode + " message=" + responseMessage);
             throw new IOException("Host returned error code " + responseCode);
-        } else if (responseCode >= HttpURLConnection.HTTP_BAD_REQUEST) {
+        } else if (responseCode >= HttpsURLConnection.HTTP_BAD_REQUEST) {
             // Client error. The request must not be repeated. Discard it.
             ACRA.log.w(LOG_TAG, responseCode + ": Client error - request will be discarded");
         } else {
